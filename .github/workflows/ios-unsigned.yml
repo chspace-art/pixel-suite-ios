@@ -13,6 +13,12 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
+    # 只改文档不该触发一次 11 分钟的 macOS 构建。
+    # 混合提交（既改文档又改代码）仍然会触发，这正是想要的。
+    paths-ignore:
+      - '**.md'
+      - '.gitignore'
+      - 'LICENSE'
 
 permissions:
   contents: read
