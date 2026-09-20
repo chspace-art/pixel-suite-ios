@@ -14,8 +14,8 @@
 | KMP 工程骨架（Kotlin 2.4.20 + CMP 1.12.0 + Gradle 9.7.0） | ✅ 建立 |
 | 墨玉主题层移植（Palette / Tokens / Type / PixelTheme / PixelIcons / PageHeader / Text） | ✅ **原样编译通过，桌面端渲染已验收** |
 | 桌面靶机（Windows 上的迭代回路） | ✅ 可跑，见下 |
-| iOS 工程（XcodeGen 双 target：Pilot + EnglishApp） | ✅ 已写，**未在 macOS 上验证过** |
-| CI 未签名 IPA 流水线 | ✅ 已写，**未跑过** |
+| iOS 工程（XcodeGen 双 target：Pilot + EnglishApp） | ✅ macOS 上生成成功，两个 target 都归档成包 |
+| CI 未签名 IPA 流水线 | ✅ **已跑通**：run #1 全 14 步绿，11.5 分钟，零签名 |
 | 手机侧装机（iTunes / iloader / SideStore / Apple ID） | ⬜ 待用户操作 |
 | 全量 UI 移植（首页/阅读器/词本/我的 + 数据层） | ⬜ 未开始，目前是骨架 |
 
@@ -112,11 +112,20 @@ private 在免费档每月只有约 200 分钟 macOS 额度（2000 分钟 ÷ 10 
 
 ### 装 App
 
-先装 **Pilot**：它能开就说明链路通了，屏幕上会直接印出机型和 iOS 版本。
+**先装 Pilot**：它能开就说明链路通了，屏幕上会直接印出机型、iOS 版本和签名方式。
 
-IPA 怎么进手机：仓库 public 的话，把 IPA 挂成 Release 资产、在 SideStore 里填 URL 装最省事；
-否则先把 IPA 弄到手机上（文件传输 / 云盘），再用 SideStore 导入。
-**具体入口以你装上的 SideStore 版本为准**，这一步我没法在 Windows 上替你验证。
+两个包已挂在 Release 上，是匿名可下载的直链（不用登录、不用连线）：
+
+```
+https://github.com/chspace-art/pixel-suite-ios/releases/download/v0.1.0/Pilot-unsigned.ipa
+https://github.com/chspace-art/pixel-suite-ios/releases/download/v0.1.0/EnglishApp-unsigned.ipa
+```
+
+在 SideStore 里选「从 URL 安装」，把上面第一条贴进去即可（入口叫法以你装上的版本为准）。
+URL 不行的话退回到老办法：`./tools/fetch-ipa.sh` 把 IPA 下到本机，再想办法弄进手机用 SideStore 导入。
+
+**先装 Pilot、验通了再装 EnglishApp**——免费账号只有 3 个名额，SideStore 占一个，
+两个 App 同时在会顶满。验完 Pilot 删掉，再装正式的。
 
 ### 名额提醒
 
@@ -132,7 +141,20 @@ IPA 怎么进手机：仓库 public 的话，把 IPA 挂成 Release 资产、在
 |---|---|
 | iOS 27 上 SideStore 登录有 bug | SideStore issue #1604（2026-09-20 仍开着）。**你的 iOS 版本是整件事的前提**，装 Pilot 后截图给我 |
 | 免费 Apple ID 封禁波 | 2026-07 起有 `0xe8008024`「描述文件被封」的报告，同机换小号即可。**别用主 iCloud 账号签** |
-| CMP 产出的 App 能否被 SideStore 重签 | 机制上没问题（静态 framework 没有嵌套 dylib 要重签），但没有公开先例。Pilot 就是为了把这条单独摘出来验 |
-| `embedAndSignAppleFrameworkForXcode` 在关签名下的行为 | 源码层面确认：`isStatic = true` 时该任务 `isEnabled = false`，不会调 codesign。但**这条没在真 CI 上跑过** |
 | 桌面端与 iOS 端的字体渲染差异 | 桌面用系统字体，iOS 上字形会不同；版式按 iPhone 逻辑分辨率（390pt 宽）调 |
-| 仓库仓库顺序 | `settings.gradle.kts` 里阿里云镜像在前（本地迭代快），Central 兜底。CI 在美国跑，嫌慢就把 `mavenCentral()` 提前 |
+| 仓库顺序 | `settings.gradle.kts` 里阿里云镜像在前（本地迭代快），Central 兜底。CI 在美国跑，嫌慢就把 `mavenCentral()` 提前 |
+
+### 已被实跑证伪/证实的（2026-09-20，run #1）
+
+- ✅ **关签名下 Kotlin framework 的嵌入任务确实被跳过**：日志里
+  `> Task :shared:embedAndSignAppleFrameworkForXcode SKIPPED`，连同
+  `checkSyntheticImportProjectIsCorrectlyIntegratedForEmbedAndSign`、
+  `generateSyntheticLinkageSwiftPMImportProjectForEmbedAndSignLinkage`、
+  `copyDsymForEmbedAndSignAppleFrameworkForXcode` 一起跳过。
+  全日志里 `codesign` 只出现在两行 `Using codesigning identity override:`（值为空），没有任何一次实际签名调用。
+- ✅ **静态 framework 直接链进可执行文件**：`EnglishApp` 的 IPA 里没有 `Frameworks/` 目录、没有 `.dylib`，
+  只有一个 26 MB 的 `EnglishApp` 主二进制。SideStore 重签时**没有嵌套 Mach-O 要处理**。
+- ✅ **产出的包确实是未签名的**：两个 IPA 里 `embedded.mobileprovision` 与 `_CodeSignature` 条目数均为 0。
+- ✅ **XcodeGen 的 YAML 语法正确**：Windows 上生成不了 `.xcodeproj` 这件事被绕过了，
+  `xcodegen generate` 在 runner 上一次成功。
+- ⚠️ 构建耗时比预估快得多：**11.5 分钟**（原估 15–35 分钟）。冷缓存第一次跑就是这个数。
