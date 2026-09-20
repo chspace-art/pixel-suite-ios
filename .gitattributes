@@ -1,0 +1,8 @@
+# 跨平台仓库的统一换行策略。
+# 这条仓库在 Windows 上写、在 macOS runner 上编，两边的 core.autocrlf 默认值相反，
+# 不锁死的话 shell 脚本会带着 CR 上 runner、`#!/usr/bin/env bash` 直接解析失败。
+* text=auto eol=lf
+*.bat text eol=crlf
+*.jar binary
+*.png binary
+*.woff2 binary

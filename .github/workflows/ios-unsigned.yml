@@ -1,0 +1,142 @@
+name: ios-unsigned
+
+# 产出一个**未签名**的 .ipa，交给本机下载后由 SideStore 用免费 Apple ID 重签安装。
+#
+# 关键点：全程不碰签名。CODE_SIGNING_ALLOWED=NO + shared 用静态 framework，
+# 使得 Kotlin Gradle 插件的 embedAndSignAppleFrameworkForXcode 任务处于禁用态
+# （KGP 对 isStatic 的 framework 直接 task.isEnabled = false），整条链路上
+# 不会出现任何 codesign 调用。所以这里不需要任何证书、任何 Secret。
+#
+# 仓库根 = Pixel/ios 目录。把这个目录单独建成一个 GitHub 仓库即可。
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    # macos-26 = arm64 M1，3 vCPU / 7 GB。Kotlin/Native 链接很吃内存，
+    # 所以 gradle.properties 里把 workers 限到 2、不开 parallel。
+    runs-on: macos-26
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Kotlin 2.4.20 官方兼容表测到 Xcode 26.4，runner 默认是 26.6。
+      # 不 pin 也能过（KGP 只打一条警告，已在 gradle.properties 里关掉），
+      # pin 上是为了出问题时少一个变量。
+      - name: Select Xcode
+        run: |
+          sudo xcode-select -s /Applications/Xcode_26.4.1.app/Contents/Developer
+          xcode-select -p
+          xcodebuild -version
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # ~/.konan 里是 Kotlin/Native 工具链（解压后 1.5–3 GB），
+      # 冷启动要下 277 MB 的预编译包。这份缓存是整条流水线里最值钱的一条。
+      - name: Cache Gradle and Kotlin/Native
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            ~/.konan
+          key: ${{ runner.os }}-${{ runner.arch }}-kn-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties', 'build.gradle.kts', 'shared/build.gradle.kts') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-kn-
+
+      # 先把工具链下载 + klib 编译放在一个名字清楚的步骤里做掉，
+      # 免得这些失败混在 xcodebuild 的长日志里不好认。链接留给 Xcode 的构建阶段。
+      - name: Warm up Kotlin/Native
+        run: ./gradlew :shared:compileKotlinIosArm64 --console=plain --stacktrace
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      # Windows 上生成不了 .xcodeproj，工程文件在这里现生成
+      - name: Generate Xcode project
+        working-directory: iosApp
+        run: xcodegen generate
+
+      # ---------------------------------------------------------- 靶机（纯 SwiftUI）
+      - name: Archive Pilot
+        working-directory: iosApp
+        run: |
+          xcodebuild archive \
+            -project iosApp.xcodeproj \
+            -scheme Pilot \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/Pilot.xcarchive" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY=""
+
+      - name: Package Pilot.ipa
+        run: |
+          set -euo pipefail
+          rm -rf "$RUNNER_TEMP/pack-pilot" && mkdir -p "$RUNNER_TEMP/pack-pilot/Payload" dist
+          cp -R "$RUNNER_TEMP/Pilot.xcarchive/Products/Applications/Pilot.app" "$RUNNER_TEMP/pack-pilot/Payload/"
+          # 必须用 ditto：zip 默认不保留 framework 里的符号链接，会把 bundle 弄坏
+          (cd "$RUNNER_TEMP/pack-pilot" && ditto -c -k --sequesterRsrc --keepParent Payload "$GITHUB_WORKSPACE/dist/Pilot-unsigned.ipa")
+          unzip -l dist/Pilot-unsigned.ipa | head -20
+
+      # ---------------------------------------------------------- 正式 App（Compose Multiplatform）
+      - name: Archive EnglishApp
+        working-directory: iosApp
+        run: |
+          xcodebuild archive \
+            -project iosApp.xcodeproj \
+            -scheme EnglishApp \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/EnglishApp.xcarchive" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY=""
+
+      - name: Package EnglishApp.ipa
+        run: |
+          set -euo pipefail
+          rm -rf "$RUNNER_TEMP/pack-eng" && mkdir -p "$RUNNER_TEMP/pack-eng/Payload" dist
+          cp -R "$RUNNER_TEMP/EnglishApp.xcarchive/Products/Applications/EnglishApp.app" "$RUNNER_TEMP/pack-eng/Payload/"
+          (cd "$RUNNER_TEMP/pack-eng" && ditto -c -k --sequesterRsrc --keepParent Payload "$GITHUB_WORKSPACE/dist/EnglishApp-unsigned.ipa")
+          unzip -l dist/EnglishApp-unsigned.ipa | head -20
+
+      # 门禁：产出的包必须是**没有签名**的。带了 embedded.mobileprovision 或 _CodeSignature
+      # 说明某处偷偷签上了，那种包交给 SideStore 反而更容易出问题。
+      - name: Assert unsigned
+        run: |
+          set -euo pipefail
+          for app in "$RUNNER_TEMP/Pilot.xcarchive/Products/Applications/Pilot.app" \
+                     "$RUNNER_TEMP/EnglishApp.xcarchive/Products/Applications/EnglishApp.app"; do
+            name=$(basename "$app")
+            if [ -e "$app/embedded.mobileprovision" ]; then
+              echo "::error::$name 里出现了 embedded.mobileprovision，构建被意外签名了"; exit 1
+            fi
+            if [ -d "$app/_CodeSignature" ]; then
+              echo "::error::$name 里出现了 _CodeSignature，构建被意外签名了"; exit 1
+            fi
+            echo "$name 未签名 ✓"
+            # 静态 framework 的另一个好处：没有需要被重签的嵌套 dylib
+            find "$app" -name '*.framework' -o -name '*.dylib' | sed 's/^/    /' || true
+          done
+          ls -lh dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-ipa
+          path: dist/*.ipa
+          if-no-files-found: error
+          retention-days: 14

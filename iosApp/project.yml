@@ -1,0 +1,107 @@
+name: iosApp
+
+# XcodeGen 工程描述。
+# 为什么用 XcodeGen 而不是提交一个 .xcodeproj：这台机器是 Windows，没有 Xcode，
+# 也就没法生成/编辑 .pbxproj。工程文件在 CI 的 macOS runner 上现生成，源码里只留这份可读的 YAML。
+#   本地/CI 命令：cd iosApp && xcodegen generate
+
+options:
+  bundleIdPrefix: com.pixeltools
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    # Xcode 15 起默认 YES，会把 Gradle 的构建阶段拦在沙箱外（KGP 也有专门的检查任务报这个）。
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
+    # 全程关签名：这里产出的 .app 是**给 SideStore 重签的原料**，自己签了反而多一层要剥掉的壳。
+    # 配合 shared/build.gradle.kts 里的 isStatic = true，KGP 的 embedAndSign 任务是禁用状态，
+    # 整条链路上不会出现任何 codesign 调用。
+    CODE_SIGNING_ALLOWED: NO
+    CODE_SIGNING_REQUIRED: NO
+    CODE_SIGN_IDENTITY: ""
+    CODE_SIGN_STYLE: Manual
+    DEVELOPMENT_TEAM: ""
+
+targets:
+  # ---------------------------------------------------------------- 靶机
+  # 纯 SwiftUI、零 Kotlin。它的唯一任务是回答"这台 iPhone 到底能不能装侧载应用"。
+  # 先装它再装 EnglishApp 是有意为之：如果 EnglishApp 装不上，
+  # 有靶机在前就能判定是 Kotlin framework 的问题，而不是 SideStore/Apple ID 的问题。
+  Pilot:
+    type: application
+    platform: iOS
+    sources: [Sources/Pilot]
+    info:
+      path: Sources/Pilot/Info.plist
+      properties:
+        CFBundleDisplayName: Pilot
+        LSRequiresIPhoneOS: true
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.pixeltools.pilot
+        PRODUCT_NAME: Pilot
+        TARGETED_DEVICE_FAMILY: "1"
+        GENERATE_INFOPLIST_FILE: NO
+
+  # ---------------------------------------------------------------- 正式 App
+  EnglishApp:
+    type: application
+    platform: iOS
+    sources: [Sources/EnglishApp]
+    info:
+      path: Sources/EnglishApp/Info.plist
+      properties:
+        CFBundleDisplayName: 句透
+        LSRequiresIPhoneOS: true
+        UILaunchScreen: {}
+        CADisableMinimumFrameDurationOnPhone: true
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.pixeltools.english
+        PRODUCT_NAME: EnglishApp
+        TARGETED_DEVICE_FAMILY: "1"
+        GENERATE_INFOPLIST_FILE: NO
+        # KGP 会把 framework 以符号链接的方式放进 BUILT_PRODUCTS_DIR，那条路径本来就在
+        # 默认搜索路径里；这里再显式写一遍是兜底，路径错了也只是多搜一个空目录。
+        FRAMEWORK_SEARCH_PATHS:
+          - $(inherited)
+          - $(SRCROOT)/../shared/build/xcode-frameworks/$(CONFIGURATION)/$(SDK_NAME)
+        OTHER_LDFLAGS:
+          - $(inherited)
+          - -framework
+          - Shared
+    preBuildScripts:
+      # 官方模板的固定做法：构建前让 Gradle 把 Shared.framework 编好并放到 Xcode 找得到的位置。
+      # 必须是 preBuildScript（排在 Compile Sources 之前）。
+      # basedOnDependencyAnalysis: false 对应模板里"关掉依赖分析"，否则 Xcode 会跳过它。
+      - name: Compile Kotlin Framework
+        basedOnDependencyAnalysis: false
+        showEnvVars: true
+        shell: /bin/sh
+        script: |
+          if [ "YES" = "$OVERRIDE_KOTLIN_BUILD_IDE_SUPPORTED" ]; then
+            echo "Skipping Gradle build task invocation due to OVERRIDE_KOTLIN_BUILD_IDE_SUPPORTED"
+            exit 0
+          fi
+          cd "$SRCROOT/.."
+          ./gradlew :shared:embedAndSignAppleFrameworkForXcode
+
+schemes:
+  Pilot:
+    build:
+      targets:
+        Pilot: all
+    archive:
+      config: Release
+  EnglishApp:
+    build:
+      targets:
+        EnglishApp: all
+    archive:
+      config: Release

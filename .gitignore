@@ -1,0 +1,21 @@
+# 只跟踪源码与工程描述。
+# 仓库根 = 这个 ios/ 目录（把它单独建成一个 GitHub 仓库，
+# 安卓套件不跟着上传，CI 也就只看得到 iOS 工程）。
+
+.gradle/
+build/
+*/build/
+local.properties
+
+# XcodeGen 在 runner 上现生成，不入库
+iosApp/iosApp.xcodeproj/
+iosApp/Sources/Pilot/Info.plist
+iosApp/Sources/EnglishApp/Info.plist
+DerivedData/
+*.xcarchive
+*.ipa
+
+.idea/
+*.iml
+.DS_Store
+.tmp/
