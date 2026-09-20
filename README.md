@@ -66,22 +66,19 @@ powershell -ExecutionPolicy Bypass -File tools/capture-window.ps1 -Out ../docs/u
 
 ## 二、打通 GitHub 链路
 
-这个目录**要单独建成一个 GitHub 仓库**（`Pixel/.gitignore` 里已把 `ios/` 排除，
-安卓套件不跟着上传，CI 也只看得到 iOS 工程）。
+这个目录**已经建成一个独立的 GitHub 仓库**：https://github.com/chspace-art/pixel-suite-ios
+（`Pixel/.gitignore` 里把 `ios/` 排除了，安卓套件不跟着上传，CI 也只看得到 iOS 工程。）
 
 ```bash
 cd Pixel/ios
-git remote add origin git@github.com:<你的账号>/pixel-english-ios.git
+git remote add origin https://github.com/chspace-art/pixel-suite-ios.git
 git push -u origin main
 ```
 
-**仓库 public 还是 private 是个真选择**：
-
-- `public`：标准 macOS runner **免费无限量**，跑多少次都行。
-- `private`：免费额度 2000 分钟/月，macOS 按 10 倍扣（约 200 有效分钟）——
-  一次冷构建就能吃掉 1/5，一个月只够跑几次。
-
-源码不想公开的话，先用 public 把链路验通、再决定。
+**仓库是 public 的**，这是为了标准 macOS runner 免费无限量——
+private 在免费档每月只有约 200 分钟 macOS 额度（2000 分钟 ÷ 10 倍系数），
+一次冷构建就能吃掉八分之一，而打通 CI 本来就要来回改几轮。
+源码不想公开的话，等链路跑绿了再改可见性（一条 API 调用）。
 
 然后：
 
